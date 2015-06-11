@@ -175,10 +175,6 @@ def main(argv=None):
 
     qt_argv += args
 
-    if options.clear_widget_settings:
-        log.debug("Clearing widget settings")
-        shutil.rmtree(config.widget_settings_dir(), ignore_errors=True)
-
     log.debug("Starting CanvasApplicaiton with argv = %r.", qt_argv)
     app = CanvasApplication(qt_argv)
 
