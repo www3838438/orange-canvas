@@ -51,7 +51,8 @@ from ..document.schemeedit import SchemeEditWidget
 from ..document.quickmenu import SortFilterProxyModel
 
 from ..scheme.readwrite import scheme_load, sniff_version
-
+from ..scheme import WorkflowEvent
+from ..scheme.signalmanager import SignalManager
 from . import welcomedialog
 from ..preview import previewdialog, previewmodel
 
@@ -231,8 +232,10 @@ class CanvasMainWindow(QMainWindow):
         w.setLayout(QVBoxLayout())
         w.layout().setContentsMargins(20, 0, 10, 0)
 
+        defaultscheme = config.workflow_constructor(parent=self)
+
         self.scheme_widget = SchemeEditWidget()
-        self.scheme_widget.setScheme(config.workflow_constructor(parent=self))
+        self.scheme_widget.setScheme(defaultscheme)
 
         dropfilter = UrlDropEventFilter(self)
         dropfilter.urlDropped.connect(self.open_scheme_file)
@@ -249,7 +252,7 @@ class CanvasMainWindow(QMainWindow):
         frame.setWidget(self.scheme_widget)
 
         # Main window title and title icon.
-        self.set_document_title(self.scheme_widget.scheme().title)
+        self.set_document_title(defaultscheme.title)
         self.scheme_widget.titleChanged.connect(self.set_document_title)
         self.scheme_widget.modificationChanged.connect(self.setWindowModified)
 
@@ -913,15 +916,19 @@ class CanvasMainWindow(QMainWindow):
         QDialog.Accepted otherwise.
 
         """
-        frozen = self.freeze_action.isChecked()
-        if not frozen:
-            self.freeze_action.trigger()
+#         frozen = self.freeze_action.isChecked()
+#         if not frozen:
+#             self.freeze_action.trigger()
 
         state = self.open_scheme()
+        workflow = self.current_document().scheme()
+        workflow.signal_manager.stop()
+
         if state == QDialog.Rejected:
+            pass
             # If the action was rejected restore the original frozen state
-            if not frozen:
-                self.freeze_action.trigger()
+#             if not frozen:
+#                 self.freeze_action.trigger()
         return state
 
     def open_scheme_file(self, filename):
@@ -951,6 +958,10 @@ class CanvasMainWindow(QMainWindow):
         self.last_scheme_dir = dirname
 
         new_scheme = self.new_scheme_from(filename)
+
+#         if new_scheme.working_directory is not None:
+#             ...
+
         if new_scheme is not None:
             self.set_new_scheme(new_scheme)
 
@@ -969,7 +980,6 @@ class CanvasMainWindow(QMainWindow):
         try:
             scheme_load(new_scheme, open(filename, "rb"),
                         error_handler=errors.append)
-
         except Exception:
             message_critical(
                  self.tr("Could not load an Orange Workflow file"),
@@ -1017,17 +1027,33 @@ class CanvasMainWindow(QMainWindow):
         """
         scheme_doc = self.current_document()
         old_scheme = scheme_doc.scheme()
-        manager = getattr(new_scheme, "signal_manager", None)
-        if self.freeze_action.isChecked() and manager is not None:
-            manager.pause()
+
+#         if self.freeze_action.isChecked() and manager is not None:
+#             manager.pause()
 
         scheme_doc.setScheme(new_scheme)
 
         # Send a close event to the Scheme, it is responsible for
         # closing/clearing all resources (widgets).
-        QApplication.sendEvent(old_scheme, QEvent(QEvent.Close))
+        self._deactivate(old_scheme)
 
         old_scheme.deleteLater()
+
+        if not self.freeze_action.isChecked():
+            if not self._activate(new_scheme):
+                self.freeze_action.setChecked(True)
+
+    def _deactivate(self, scheme):
+        event = WorkflowEvent(WorkflowEvent.Deactivate)
+        event.setAccepted(True)
+        QApplication.sendEvent(scheme, event)
+        return event.isAccepted()
+
+    def _activate(self, scheme):
+        event = WorkflowEvent(WorkflowEvent.Activate)
+        event.setAccepted(True)
+        QApplication.sendEvent(scheme, event)
+        return event.isAccepted()
 
     def ask_save_changes(self):
         """Ask the user to save the changes to the current scheme.
@@ -1477,12 +1503,13 @@ class CanvasMainWindow(QMainWindow):
 
     def set_signal_freeze(self, freeze):
         scheme = self.current_document().scheme()
-        manager = getattr(scheme, "signal_manager", None)
-        if manager is not None:
-            if freeze:
-                manager.pause()
-            else:
-                manager.resume()
+        if scheme is not None:
+            manager = scheme.findChild(SignalManager)
+            if manager is not None:
+                if freeze:
+                    manager.pause()
+                else:
+                    manager.resume()
 
     def remove_selected(self):
         """Remove current scheme selection.

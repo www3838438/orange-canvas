@@ -9,10 +9,9 @@ widgets in a scheme.
 """
 
 import logging
-import itertools
 
 from collections import namedtuple, defaultdict, deque
-from operator import attrgetter, add
+from operator import attrgetter
 from functools import partial
 
 
@@ -21,6 +20,7 @@ from PyQt4.QtCore import pyqtSignal as Signal
 
 
 from .scheme import SchemeNode
+from .events import  NodeEvent, LinkEvent
 from functools import reduce
 
 log = logging.getLogger(__name__)
@@ -44,45 +44,64 @@ class SignalManager(QObject):
     (nodes, links) are added to the scheme.
 
     """
-    Running, Stoped, Paused, Error = range(4)
-    """SignalManger state flags."""
+    #: Signal manager state
+    Running, Stoped, Paused = range(3)
 
+    #: SignalManager runtime state flags.
     Waiting, Processing = range(2)
-    """SignalManager runtime state flags."""
 
+    #: Emitted when the state of the signal manager changes.
     stateChanged = Signal(int)
-    """Emitted when the state of the signal manager changes."""
 
+    #: Emitted when signals are added to the queue.
     updatesPending = Signal()
-    """Emitted when signals are added to the queue."""
 
+    #: Emitted right before a `SchemeNode` instance has its inputs updated.
     processingStarted = Signal([], [SchemeNode])
-    """Emitted right before a `SchemeNode` instance has its inputs
-    updated.
-    """
 
+    #: Emitted right after a `SchemeNode` instance has had its inputs updated.
     processingFinished = Signal([], [SchemeNode])
-    """Emitted right after a `SchemeNode` instance has had its inputs
-    updated.
-    """
 
+    #: Emitted when `SignalManager`'s runtime state changes.
     runtimeStateChanged = Signal(int)
-    """Emitted when `SignalManager`'s runtime state changes."""
 
-    def __init__(self, scheme):
-        assert(scheme)
-        QObject.__init__(self, scheme)
-        self._input_queue = []
-
+    def __init__(self, parent=None):
+        QObject.__init__(self, parent)
+        self.__scheme = None
+        self.__input_queue = []
         # mapping a node to it's current outputs
         # {node: {channel: {id: signal_value}}}
-        self._node_outputs = {}
+        self.__node_outputs = {}
 
-        self.__state = SignalManager.Running
+        self.__state = SignalManager.Stoped
         self.__runtime_state = SignalManager.Waiting
 
         # A flag indicating if UpdateRequest event should be rescheduled
         self.__reschedule = False
+
+    def scheme(self):
+        """
+        Return the current class:`Scheme` instance.
+        """
+        return self.__scheme
+
+    def set_scheme(self, scheme):
+        if scheme is self.__scheme:
+            return
+
+        if self.__scheme is not None:
+            self.__scheme.removeEventFilter(self)
+            self.__node_outputs = {}
+            self.__input_queue = []
+
+        self.__scheme = scheme
+        if scheme is not None:
+            scheme.installEventFilter(self)
+            for node in scheme.nodes:
+                self.__node_outputs[node] = defaultdict(dict)
+
+    def has_pending(self):
+        return bool(self.__input_queue)
 
     def _can_process(self):
         """
@@ -90,13 +109,7 @@ class SignalManager(QObject):
         processing loop.
 
         """
-        return self.__state not in [SignalManager.Error, SignalManager.Stoped]
-
-    def scheme(self):
-        """
-        Return the parent class:`Scheme` instance.
-        """
-        return self.parent()
+        return self.__state != SignalManager.Stoped
 
     def start(self):
         """
@@ -115,7 +128,7 @@ class SignalManager(QObject):
         """
         Stop the update loop.
 
-        .. note:: If the `SignalManager` is currently in `process_queues` it
+        .. note:: If the `SignalManager` is currently in `process_queued` it
                   will still update all current pending signals, but will not
                   re-enter until `start()` is called again
 
@@ -174,19 +187,19 @@ class SignalManager(QObject):
         # NOTE: This does not remove output signals for this node. In
         # particular the final 'None' will be delivered to the sink
         # nodes even after the source node is no longer in the scheme.
-        log.info("Node %r removed. Removing pending signals.",
+        log.info("Removing pending signals for '%s'.",
                  node.title)
         self.remove_pending_signals(node)
 
-        del self._node_outputs[node]
+        del self.__node_outputs[node]
 
     def on_node_added(self, node):
-        self._node_outputs[node] = defaultdict(dict)
+        self.__node_outputs[node] = defaultdict(dict)
 
     def link_added(self, link):
         # push all current source values to the sink
         if link.enabled:
-            log.info("Link added (%s). Scheduling signal data update.", link)
+            log.info("Scheduling signal data update for '%s'.", link)
             self._schedule(self.signals_on_link(link))
             self._update()
 
@@ -194,7 +207,7 @@ class SignalManager(QObject):
 
     def link_removed(self, link):
         # purge all values in sink's queue
-        log.info("Link removed (%s). Scheduling signal data purge.", link)
+        log.info("Scheduling signal data purge (%s).", link)
         self.purge_link(link)
 
     def link_enabled_changed(self, enabled):
@@ -223,7 +236,7 @@ class SignalManager(QObject):
         """
         node, channel = link.source_node, link.source_channel
 
-        return self._node_outputs[node][channel]
+        return self.__node_outputs[node][channel]
 
     def send(self, node, channel, value, id):
         """
@@ -233,7 +246,7 @@ class SignalManager(QObject):
 
         scheme = self.scheme()
 
-        self._node_outputs[node][channel][id] = value
+        self.__node_outputs[node][channel][id] = value
 
         links = scheme.find_links(source_node=node, source_channel=channel)
         links = filter(is_enabled, links)
@@ -258,7 +271,7 @@ class SignalManager(QObject):
         """
         Schedule a list of :class:`_Signal` for delivery.
         """
-        self._input_queue.extend(signals)
+        self.__input_queue.extend(signals)
 
         if signals:
             self.updatesPending.emit()
@@ -346,19 +359,19 @@ class SignalManager(QObject):
         it has incoming pending signals).
 
         """
-        return node in [signal.link.sink_node for signal in self._input_queue]
+        return node in [signal.link.sink_node for signal in self.__input_queue]
 
     def pending_nodes(self):
         """
         Return a list of pending nodes (in no particular order).
         """
-        return list(set(sig.link.sink_node for sig in self._input_queue))
+        return list(set(sig.link.sink_node for sig in self.__input_queue))
 
     def pending_input_signals(self, node):
         """
         Return a list of pending input signals for node.
         """
-        return [signal for signal in self._input_queue
+        return [signal for signal in self.__input_queue
                 if node is signal.link.sink_node]
 
     def remove_pending_signals(self, node):
@@ -367,7 +380,7 @@ class SignalManager(QObject):
         """
         for signal in self.pending_input_signals(node):
             try:
-                self._input_queue.remove(signal)
+                self.__input_queue.remove(signal)
             except ValueError:
                 pass
 
@@ -430,8 +443,8 @@ class SignalManager(QObject):
                 return True
 
             log.info("'UpdateRequest' event, queued signals: %i",
-                      len(self._input_queue))
-            if self._input_queue:
+                      len(self.__input_queue))
+            if self.__input_queue and self.__scheme is not None:
                 self.process_queued(max_nodes=1)
             event.accept()
 
@@ -439,7 +452,7 @@ class SignalManager(QObject):
                 log.debug("Rescheduling 'UpdateRequest' event")
                 self._update()
                 self.__reschedule = False
-            elif self.node_update_front():
+            elif self.__scheme is not None and self.node_update_front():
                 log.debug("More nodes are eligible for an update. "
                           "Scheduling another update.")
                 self._update()
@@ -447,6 +460,23 @@ class SignalManager(QObject):
             return True
 
         return QObject.event(self, event)
+
+    def eventFilter(self, obj, event):
+        if obj is self.__scheme:
+            if event.type() == NodeEvent.NodeAdded:
+                self.on_node_added(event.node())
+            elif event.type() == NodeEvent.NodeRemoved:
+                self.on_node_removed(event.node())
+            elif event.type() == LinkEvent.LinkAdded:
+                self.link_added(event.link())
+            elif event.type() == LinkEvent.LinkRemoved:
+                self.link_removed(event.link())
+            elif event.type() == LinkEvent.LinkStateChange:
+#                 self.link_enabled_changed(enabled)
+#                 self._schedule(self.signals_on_link(event.link()))
+                pass
+
+        return QObject.eventFilter(self, obj, event)
 
     def _update(self):
         """

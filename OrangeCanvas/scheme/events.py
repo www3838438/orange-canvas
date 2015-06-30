@@ -37,7 +37,6 @@ class WorkflowEvent(QEvent):
 
     # Workflow runtime changed (Running/Paused/Stopped, ...)
     RuntimeStateChange = QEvent.registerEventType()
-
     #: Workflow resource changed (e.g. work directory, env variable)
     WorkflowResourceChange = QEvent.registerEventType()
     #: Workflow is about to close.
@@ -51,6 +50,12 @@ class WorkflowEvent(QEvent):
     #: Request activation (show and raise) of the window containing
     #: the workflow view
     ActivateParentRequest = QEvent.registerEventType()
+    #: A workflow activation request. Sent to the Scheme instance after
+    #: it has been initialized and should start to execute/run
+    Activate = QEvent.registerEventType()
+    #: A workflow deactivation request. Sent to the Scheme instance
+    #: when the user closes it.
+    Deactivate = QEvent.registerEventType()
 
     def __init__(self, etype):
         QEvent.__init__(self, etype)

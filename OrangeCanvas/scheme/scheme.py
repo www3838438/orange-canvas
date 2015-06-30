@@ -64,7 +64,6 @@ class Scheme(QObject):
         A list of all the annotations in the scheme.
 
     """
-
     # Signal emitted when a `node` is added to the scheme.
     node_added = Signal(SchemeNode)
 
@@ -650,4 +649,3 @@ class Scheme(QObject):
         if isinstance(stream, six.string_types):
             stream = open(stream, "rb")
         readwrite.scheme_load(self, stream)
-#         parse_scheme(self, stream)
