@@ -145,8 +145,12 @@ class WidgetManager(QObject):
         event = WidgetManager.WidgetInitEvent(state)
         if self.__delayed_init:
             def schedule_later():
-                QCoreApplication.postEvent(
-                    self, event, Qt.LowEventPriority - 10)
+                try:
+                    QCoreApplication.postEvent(
+                        self, event, Qt.LowEventPriority - 10)
+                except RuntimeError:
+                    pass
+
             QTimer.singleShot(int(1000 / 30) + 10, schedule_later)
         else:
             QCoreApplication.sendEvent(self, event)
