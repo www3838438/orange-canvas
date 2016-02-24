@@ -4,6 +4,12 @@ Main Window
 
 `MainWindow` is the primary main workflow editor/view.
 
+::
+    window = CanvasMainWindow()
+    window.show()
+    window.setWorkflowModel()
+
+
 """
 import os
 import sys
@@ -24,7 +30,7 @@ from AnyQt.QtWidgets import (
 
 from AnyQt.QtGui import QColor, QKeySequence, QIcon, QDesktopServices
 from AnyQt.QtCore import (
-    Qt, QObject, QEvent, QSize, QUrl, QTimer, QFile, QByteArray
+    Qt, QObject, QEvent, QSize, QUrl, QTimer, QFile, QByteArray, QSettings
 )
 
 from AnyQt.QtNetwork import QNetworkDiskCache
@@ -36,8 +42,7 @@ from AnyQt.QtCore import pyqtProperty as Property, pyqtSignal as Signal
 from .. import scheme
 from ..scheme import readwrite
 
-# Compatibility with PyQt < v4.8.3
-from ..utils.qtcompat import QSettings, qunwrap
+from ..utils.qtcompat import qunwrap
 
 from ..gui.dropshadow import DropShadowFrame
 from ..gui.dock import CollapsibleDockWidget
@@ -88,9 +93,9 @@ log = logging.getLogger(__name__)
 #
 
 
-class SchemeDocument(Document):
+class WorkflowDocument(Document):
     def __init__(self, parent=None, **kwargs):
-        super(SchemeDocument, self).__init__(parent, **kwargs)
+        super(WorkflowDocument, self).__init__(parent, **kwargs)
         #: The MainWindow associated with the open workflow.
         self.__widget = None
         self.__workflow = None
@@ -99,7 +104,7 @@ class SchemeDocument(Document):
     def documentTypes(self):
         """Return the supported document types.
         """
-        return [file_format("Orange Workflow", None, "ows")]
+        return [file_format("Orange Workflow", None, ".ows")]
 
     def setDefaultRegistry(self, registry):
         self.__defaultRegistry = registry
@@ -124,7 +129,7 @@ class SchemeDocument(Document):
             self.__widget.installEventFilter(self)
         return self.__widget
 
-    def open(self, url):
+    def read(self, url):
         workflow = config.workflow_constructor()
         if self.__default_registry is not None:
             reg = self.__default_registry
@@ -141,6 +146,15 @@ class SchemeDocument(Document):
 
         widget.set_scheme(workflow)
         return True
+
+    def open_(self, url):
+        flow = workflow.parse(open(url, "rb"))
+        requires = flow.requires
+        flow = yield from workflow.resolve(flow)  # resolve dependencies
+        registry = ...  # i.e. find widgets for document flow type
+        model = workflowmodel.create(flow)
+        runner.setmodel(model)
+        runner.start()
 
     def writeToPath(self, url, fileformat=None):
         if self.check_can_save(url):
@@ -258,7 +272,7 @@ class SchemeDocument(Document):
             modified = window.isWindowModified()
         else:
             modified = False
-        return modified or super(SchemeDocument, self).isModified()
+        return modified or super(WorkflowDocument, self).isModified()
 
     def tr(self, sourceText, disambiguation=None, n=-1):
         """
@@ -268,7 +282,6 @@ class SchemeDocument(Document):
 
 
 class CanvasController(DocumentController):
-
     def __init__(self, parent=None):
         super(CanvasController, self).__init__(parent)
         self.__action_open_and_freeze = QAction(
@@ -287,7 +300,7 @@ class CanvasController(DocumentController):
                     )
 
         self.set_document_types([file_format("Orange Workflow", None, "ows")])
-        self.set_default_document_type(SchemeDocument)
+        self.set_default_document_type(WorkflowDocument)
 
         self.__registry = None
 
@@ -303,10 +316,10 @@ class CanvasController(DocumentController):
         return cls.__instance
 
     def document_class_for_url(self, url):
-        return SchemeDocument
+        return WorkflowDocument
 
     def default_document_type(self):
-        return SchemeDocument
+        return WorkflowDocument
 
     def open_and_freeze_action(self):
         return self.__open_and_freeze_action
@@ -407,6 +420,14 @@ def style_icons(widget, standard_pixmap):
     return QIcon(widget.style().standardPixmap(standard_pixmap))
 
 
+def standard_icon(standard_icon, option=None, widget=None):
+    if widget is not None:
+        style = widget.style()
+    else:
+        style = QApplication.style()
+    return style.standardIcon(standard_icon, option, widget)
+
+
 def canvas_icons(name):
     """Return the named canvas icon.
     """
@@ -505,7 +526,6 @@ class MainWindow(QMainWindow):
 
         self.__scheme_margins_enabled = True
         self.__documentTitle = None
-        self.__first_show = True
 
         #: Widget source model (widget registry)
         self.__widget_source = None
@@ -765,13 +785,13 @@ class MainWindow(QMainWindow):
                 "toolbox-exclusive": self.widgets_tool_box.isExclusive(),
                 "floatable": bool(self.dock_widget.features() &
                                   QDockWidget.DockWidgetFloatable),
+                # "use-popover-menu": self.dock_widget.usePopoverMenu()
             },
             "editor": {
                 "quick-menu-triggers": self.scheme_widget.quickMenuTriggers(),
                 "channel-names-visible": self.scheme_widget.channelNamesVisible(),
                 "node-animations-enabled": self.scheme_widget.nodeAnimationEnabled(),
             },
-#                 toolbox-dock-use-popover-menu
             "margins-enabled": self.toogle_margins_action.isChecked(),
         }
 
@@ -913,11 +933,6 @@ class MainWindow(QMainWindow):
 
         central.layout().setContentsMargins(*margins)
 
-    #################
-    # Action handlers
-    #################
-
-#     def set_scheme(self, scheme):
     def setWorkflowModel(self, workflow):
         """
         Set `workflow` instance as the current displayed workflow.
@@ -936,6 +951,10 @@ class MainWindow(QMainWindow):
             manager.pause()
 
         editor.setScheme(scheme)
+
+    #################
+    # Action handlers
+    #################
 
     def scheme_properties_dialog(self):
         """Return an empty `SchemeInfo` dialog instance.

@@ -15,10 +15,10 @@ import six
 
 from AnyQt.QtWidgets import (
     QApplication, QAction, QActionGroup, QMenu, QFileDialog, QMessageBox,
-    QPlainTextEdit
+    QPlainTextEdit, QFileIconProvider
 )
 from AnyQt.QtGui import QKeySequence, QDesktopServices
-from AnyQt.QtCore import Qt, QUrl, QEvent, QObject
+from AnyQt.QtCore import Qt, QUrl, QEvent, QObject, QFileInfo
 from AnyQt.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
 
 from ..gui import utils
@@ -156,19 +156,19 @@ class Document(QObject):
 
         Returns
         -------
-        widget : QtGui.QWidget
+        widget : QWidget
         """
         raise NotImplementedError
 
     def documentController(self):
         """
-        Return the DocumentControler instance which manages this document.
+        Return the DocumentController instance which manages this document.
 
         Return None if the document is not associated with a controller
 
         Returns
         -------
-        controller : Option[DocumentControler]
+        controller : Optional[DocumentController]
         """
         return self.__document_controller
 
@@ -326,6 +326,7 @@ class Document(QObject):
             widget.activateWindow()
 
     def saveFileDialog(self, ):
+        ## This should be controllers/application's responsibility
         dialog = QFileDialog(
             self.widget(),
             fileMode=QFileDialog.ExistingFile,
@@ -343,20 +344,7 @@ class Document(QObject):
     def runSaveFileDialog(self, ):
         dialog = self.saveFileDialog()
         dialog.show()
-        dialog.done.connect(do_or_do_not_there_is_no_try)
-# 
-#     def run_save_file_dialog(self):
-#         if self.url().isValid():
-#             start_dir = self.url()
-#         else:
-#             start_dir = QDesktopServices.storageLocation(
-#                 QDesktopServices.DocumentsLocation)
-#         types = self.document_type()
-#         filter_spec = types_to_filters(types)
-#         filename, selected_filter = QFileDialog.getSaveFileName(
-#             self.widget(), "Save", start_dir, ";;".join(filter_spec))
-# 
-#         return filename, selected_filter
+        # dialog.done.connect(...)
 
     def undoStack(self):
         """
@@ -372,15 +360,15 @@ class Document(QObject):
         """
         return []
 
-        return (("File", ("Save", "Save as...", "Close", "Workflow Info"),)
-                ("Edit", ("Copy", "Cut", "Paste")),
-                ("View", ("Expand Dock", "Display Margins",
-                          "Zoom In", "Zoom Out",
-                          "---[separator]---", "Output")),
-                ("Tools", ("Annotate", "Align to grid", )))
+        # return (("File", ("Save", "Save as...", "Close", "Workflow Info"),)
+        #         ("Edit", ("Copy", "Cut", "Paste")),
+        #         ("View", ("Expand Dock", "Display Margins",
+        #                   "Zoom In", "Zoom Out",
+        #                   "---[separator]---", "Output")),
+        #         ("Tools", ("Annotate", "Align to grid", )))
 
     def eventFilter(self, receiver, event):
-        if receiver is self.widget() and event.type() == QEvent.Close:
+        if event.type() == QEvent.Close and receiver is self.widget():
             event.setAccepted(self.close())
             return True
         else:
@@ -388,12 +376,18 @@ class Document(QObject):
 
 
 class TxtDocument(Document):
+    """
+    A plain text document
+    """
     def __init__(self, parent=None, **kwargs):
         super(TxtDocument, self).__init__(parent, **kwargs)
         self.__contents = ""
         self.__widget = None
 
-    def open(self, url):
+    def documentType(self):
+        return TxtDocument.Type("Plain Text", "text/plain", [".txt"])
+
+    def read(self, url, doctype=None):
         filepath = str(url.toLocalFile())
         try:
             with io.open(filepath, "r") as f:
@@ -424,8 +418,9 @@ class DocumentController(QObject):
     """
     documentOpened = Signal(Document)
     documentClosed = Signal(Document)
-
-    #: The current topmost open document has changed.
+    #: Document's modified state has changed
+    documentModifiedChanged = Signal(Document)
+    #: The current topmost open document has changed
     currentDocumentChanged = Signal(Document)
 
     def __init__(self, parent=None, **kwargs):
@@ -522,45 +517,43 @@ class DocumentController(QObject):
         """
         return self.__action_open
 
-    def recent_action(self):
+    def actionRecent(self):
         """
         Return an QAction (with a QMenu) of recent documents.
         """
         return self.__recent
 
-    def clear_recent_action(self):
+    def actionClearRecent(self):
         """
         Return the 'Clear Recent' QAction.
         """
         return self.__clear_recent
 
-    def browse_recent_action(self):
+    def actionBrowseRecent(self):
         """
         Return the 'Browse Recent' QAction.
         """
         return self.__browse_recent
 
-    def reload_last_action(self):
+    def actionReloadLast(self):
         """
         Return the 'Reload Last' QAction.
         """
         return self.__reload_last
 
-    def reload_last(self):
+    def reloadLast(self):
         """
         Reload the last saved document.
         """
-        recent = self.recent_items()
+        recent = self.recentItems()
         recent = sorted(recent, key=lambda item: item.time)
         if recent:
             url = recent[-1].url
-            self.open_document(url)
+            self.openDocument(url)
             # What it should look like
-#             loader = recent[-1].loader  # Use the associated document loader/type
-#             # loader = self.last_used_type_for(url)
-#             self.open_document(url, loader=loader)
+            # self.openDocument(url, recent[-1].loadspec)
 
-    def window_action(self):
+    def actionWindow(self):
         # OSX style 'Window' menu bar action.
         return self.__window
 
@@ -596,60 +589,20 @@ class DocumentController(QObject):
 
         dialog.done.connect(whendone)
 
-# 
-#         types = self.document_types()
-#         filename, filetype = self.run_open_file_dialog(types=types)
-# 
-#         if not filename:
-#             return
-
-        doc_class = self.document_class_for_url(filename)
-
-        curr_doc = self.current_document()
-        if type(curr_doc) is doc_class and curr_doc.is_transient():
-            curr_doc.open(filename)
-        else:
-            self.open_document(filename)
-
     def openFileDialog(self, ):
         dialog = QFileDialog(
             fileMode=QFileDialog.AnyFile,
             acceptMode=QFileDialog.AcceptOpen,
 
         )
-#         directory = QDesktopServices.storageLocation(
-#             QDesktopServices.DocumentsLocation)
-#         dialog.setDirectory(directory)
+        directory = QDesktopServices.storageLocation(
+            QDesktopServices.DocumentsLocation)
+        dialog.setDirectory(directory)
         doctypes = self.documentTypes()
         specs = types_to_filters(doctypes)
         dialog.setNameFilters(specs)
-        dialog.selectNameFilter()
+        dialog.selectNameFilter(specs[0])
         return dialog
-
-#     def run_open_file_dialog(self, types=None):
-#         if types is None:
-#             types = self.document_types()
-#         if not types:
-#             types = [file_format("All", "", "*")]
-# 
-#         if self.__lastDirectory:
-#             start_dir = self.__lastDirectory
-#         else:
-#             start_dir = QDesktopServices.storageLocation(
-#                 QDesktopServices.DocumentsLocation)
-# 
-#         filters = types_to_filters(types)
-#         filters_spec = ";;".join(filters)
-#         filename, selected_filter = QFileDialog.getOpenFileNameAndFilter(
-#             None, "Open", start_dir, filter=filters_spec
-#         )
-#         if filters:
-#             selected_filter = filters.index(selected_filter)
-#             selected_filter = types[selected_filter]
-#         else:
-#             selected_filter = None
-# 
-#         return six.text_type(filename), selected_filter
 
     def defaultDocumentClass(self):
         if self.__default_document_class:
@@ -666,7 +619,6 @@ class DocumentController(QObject):
         """
         doc_class = self.documentClassForUrl(url)
         doc = doc_class.create(self)
-#         print(doc, url)
         if doc.read(url, doctype=doc_class):
             self.addDocument(doc)
             return True
@@ -715,28 +667,32 @@ class DocumentController(QObject):
         else:
             return None
 
-    #: Current (top most active) document has changed.
-#     currentDocumentChanged = Signal(QWidget)
-
     def documents(self):
         """
         Return a list of all documents.
         """
         return list(self.__documents)
 
-    def has_modified_documents(self):
+    def hasModifiedDocuments(self):
         """
         Return True if any document is in a modified state.
         """
-        return any(doc.is_modified() for doc in self.__documents)
+        return any(doc.isModified() for doc in self.__documents)
 
-    def recent_items(self):
+    def recentItems(self):
         """
         Return a list of recently open items.
         """
         return list(self.__recent)
 
     def noteRecent(self, item):
+        """
+        Add an item to the recent items list.
+
+        Parameters
+        ----------
+        item : Document
+        """
         if not item.url():
             return
         if not item.display_name:
@@ -757,16 +713,16 @@ class DocumentController(QObject):
             self.__recent_menu.removeAction(action)
 
         else:
-            # TODO: use QFileIconProvider to get the file icon
+            iconprovider = QFileIconProvider()
+            icon = iconprovider.icon(QFileInfo(path))
             action = QAction(
-                display_name, self, toolTip=item.url,
+                display_name, self, icon=icon, toolTip=item.url,
             )
-
-            action.triggered.connect(lambda: self.open_document(path))
+            action.triggered.connect(lambda: self.openDocument(path))
 
         action.setData(item)
         actions = filter(
-            lambda a: recent_item.isinstance(qunwrap(a.data())),
+            lambda a: isinstance(qunwrap(a.data()), recent_item),
             self.__recent_menu.actions()
         )
 
